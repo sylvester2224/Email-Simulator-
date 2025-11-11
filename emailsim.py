@@ -10,12 +10,19 @@ import time
 ATTACHMENT_SIZE_LIMIT_MB = 5
 ATTACHMENT_SIZE_LIMIT_BYTES = ATTACHMENT_SIZE_LIMIT_MB * 1024 * 1024
 
-# Regex patterns for detection
+# Regex patterns for detection (Added Pressure Language)
 REGEX_PATTERNS = {
     "Phone Number": r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
     "Credit Card": r"\b(?:\d[ -]*?){13,16}\b",
     "Financial Amount": r"[$€£¥]\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?",
-    "Numbers in Words (Financial)": r"\b(?:five|ten|twenty|fifty|hundred|thousand|million|billion)\s+(?:dollars|euros|pounds|usd|eur)\b"
+    "Numbers in Words (Financial)": r"\b(?:five|ten|twenty|fifty|hundred|thousand|million|billion)\s+(?:dollars|euros|pounds|usd|eur)\b",
+    "Pressure Language": r"\b(urgent|immediately|asap|time-sensitive|do this now|action required)\b"
+}
+
+# NEW: Sensitive Keyword Lists
+SENSITIVE_KEYWORDS = {
+    "Project Codeword": ["Project Phoenix", "Project Titan", "BlueSky"],
+    "Confidential Info": ["merger", "acquisition", "layoffs", "restructuring"]
 }
 
 def monitor_email(body_text, attachments):
@@ -24,15 +31,23 @@ def monitor_email(body_text, attachments):
     Returns a list of flags.
     """
     flags = []
+    body_lower = body_text.lower()
     
     # 1. Scan body text with regex
     for flag_name, pattern in REGEX_PATTERNS.items():
-        if re.search(pattern, body_text, re.IGNORECASE):
+        if re.search(pattern, body_lower, re.IGNORECASE):
             flags.append(flag_name)
             
-    # 2. Scan attachments
+    # 2. NEW: Scan for sensitive keywords
+    for flag_name, keywords in SENSITIVE_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword.lower() in body_lower:
+                flags.append(f"Sensitive Keyword ({flag_name})")
+                break # Stop checking this category once one is found
+            
+    # 3. Scan attachments
     if not attachments:
-        return flags
+        return list(set(flags)) # Return unique flags
 
     for att in attachments:
         # Check size
@@ -85,7 +100,7 @@ MOCK_INBOX = [
         "id": 1,
         "from": "accounting@partner.com",
         "subject": "FW: Urgent Invoice",
-        "body": "Please see the attached invoice for payment. Call me at (123) 456-7890 if you have questions.",
+        "body": "Please see the attached invoice for payment. Call me at (123) 456-7890 if you have questions. This is time-sensitive.",
         "attachments": [get_mock_image()]
     },
     {
@@ -114,6 +129,13 @@ MOCK_INBOX = [
         "from": "investor@moneytalk.com",
         "subject": "Wire Transfer",
         "body": "Please wire the one hundred thousand dollars as we discussed. This is very time sensitive.",
+        "attachments": []
+    },
+    {
+        "id": 6,
+        "from": "legal@lawfirm.com",
+        "subject": "Project Phoenix documents",
+        "body": "Here are the documents regarding the Project Phoenix acquisition. Please review ASAP.",
         "attachments": []
     }
 ]
@@ -149,7 +171,8 @@ if page == "📤 Compose (Outgoing)":
             to_email = st.text_input("To:", "customer@example.com")
         
         subject = st.text_input("Subject:", "Following up on your order")
-        body = st.text_area("Body:", "Hi,\n\nHere is the information you requested about your payment of $150.00. You can reach me at (555) 123-4567.", height=150)
+        # NEW: Updated default body to include new potential flags
+        body = st.text_area("Body:", "Hi,\n\nHere is the information you requested about your payment of $150.00. You can reach me at (555) 123-4567.\n\nThis is very urgent as we are also discussing the Project Phoenix merger.", height=150)
         attachments = st.file_uploader("Attachments (monitoring for size and image type)", accept_multiple_files=True)
         
         submitted = st.form_submit_button("Simulate Send", use_container_width=True)
@@ -258,6 +281,12 @@ elif page == "📥 Inbox (Incoming)":
 elif page == "🛡️ Monitor Dashboard (Manager)":
     st.title("🛡️ Monitor Dashboard (Manager's View)")
     st.markdown("This view simulates the manager's console, showing *only* the flagged events.")
+
+    if st.button("Clear Log", use_container_width=True, type="primary"):
+        st.session_state.log = []
+        st.session_state.email_status = {email["id"]: "unread" for email in MOCK_INBOX}
+        st.rerun()
+
     st.markdown("---")
 
     if not st.session_state.log:
@@ -265,48 +294,69 @@ elif page == "🛡️ Monitor Dashboard (Manager)":
     else:
         log_df = pd.DataFrame(st.session_state.log)
         
-        # --- Metrics ---
-        st.subheader("High-Level Stats")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Incidents", len(log_df))
-        col2.metric("Incoming Flags", log_df['Direction'].value_counts().get('Incoming', 0))
-        col3.metric("Outgoing Flags", log_df['Direction'].value_counts().get('Outgoing', 0))
-        st.markdown("---")
+        # NEW: Added tabs for better organization
+        tab1, tab2, tab3 = st.tabs(["📈 Overview", "📊 Flag Analysis", "📜 Incident Log"])
 
-        # --- Flag Type Analysis ---
-        st.subheader("Flag Type Analysis")
-        if log_df.empty or log_df['Flags'].str.strip().eq('').all():
-            st.info("No flags to analyze yet.")
-        else:
-            try:
-                # Clean up and split the 'Flags' column
-                all_flags = log_df['Flags'].str.split(', ').explode().str.strip()
-                # Remove any empty strings that might result from splitting
-                all_flags = all_flags[all_flags != '']
+        with tab1:
+            st.subheader("High-Level Stats")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Incidents", len(log_df))
+            col2.metric("Incoming Flags", log_df['Direction'].value_counts().get('Incoming', 0))
+            col3.metric("Outgoing Flags", log_df['Direction'].value_counts().get('Outgoing', 0))
+
+            st.markdown("---")
+            st.subheader("Incidents Over Time")
+            
+            # NEW: Time-series chart
+            if log_df.empty:
+                st.info("No incidents to plot over time.")
+            else:
+                # Make a copy to avoid changing the original df
+                time_df = log_df.copy()
+                # Set timestamp as the index for resampling
+                time_df.set_index('Timestamp', inplace=True)
                 
-                if all_flags.empty:
-                    st.info("No flags to analyze yet.")
+                # Count incidents per hour ('H') or 'D' for day, 'T' for minute
+                # Let's use 15-minute intervals for a more granular look
+                incidents_over_time = time_df.resample('15T').size().reset_index(name='count')
+                incidents_over_time.rename(columns={'Timestamp': 'Time'}, inplace=True)
+                
+                if incidents_over_time.empty:
+                    st.info("No incidents to plot.")
                 else:
-                    flag_counts = all_flags.value_counts()
-                    st.bar_chart(flag_counts, y="Count")
-            except Exception as e:
-                st.error(f"Error generating chart: {e}")
+                    st.line_chart(incidents_over_time, x='Time', y='count')
 
-        st.markdown("---")
 
-        # --- Incident Log ---
-        st.subheader("Red Flag Incident Log")
-        st.caption("The full email content is not stored or shown here for privacy.")
-        
-        # Reorder columns for clarity
-        log_df_display = log_df[["Timestamp", "Direction", "From", "To", "Subject", "Flags"]]
-        
-        # Sort by timestamp, newest first
-        log_df_display = log_df_display.sort_values(by="Timestamp", ascending=False)
-        
-        st.dataframe(log_df_display, use_container_width=True)
+        with tab2:
+            st.subheader("Flag Type Analysis")
+            if log_df.empty or log_df['Flags'].str.strip().eq('').all():
+                st.info("No flags to analyze yet.")
+            else:
+                try:
+                    # Clean up and split the 'Flags' column
+                    all_flags = log_df['Flags'].str.split(', ').explode().str.strip()
+                    # Remove any empty strings that might result from splitting
+                    all_flags = all_flags[all_flags != '']
+                    
+                    if all_flags.empty:
+                        st.info("No flags to analyze yet.")
+                    else:
+                        flag_counts = all_flags.value_counts()
+                        st.bar_chart(flag_counts, y="Count")
+                except Exception as e:
+                    st.error(f"Error generating chart: {e}")
 
-        if st.button("Clear Log", use_container_width=True, type="primary"):
-            st.session_state.log = []
-            st.session_state.email_status = {email["id"]: "unread" for email in MOCK_INBOX}
-            st.rerun()
+        with tab3:
+            st.subheader("Red Flag Incident Log")
+            st.caption("The full email content is not stored or shown here for privacy.")
+            
+            # Reorder columns for clarity
+            log_df_display = log_df[["Timestamp", "Direction", "From", "To", "Subject", "Flags"]]
+            
+            # Sort by timestamp, newest first
+            log_df_display = log_df_display.sort_values(by="Timestamp", ascending=False)
+            
+            # Reset index for cleaner display in dataframe
+            log_df_display.reset_index(drop=True, inplace=True)
+            
+            st.dataframe(log_df_display, use_container_width=True)
